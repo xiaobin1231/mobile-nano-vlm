@@ -1,0 +1,6 @@
+[submodule "third_party/minimind-v"]
+	path = third_party/minimind-v
+	url = git@github.com:jingyaogong/minimind-v.git
+[submodule "third_party/MNN"]
+	path = third_party/MNN
+	url = git@github.com:alibaba/MNN.git
