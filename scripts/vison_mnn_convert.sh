@@ -6,8 +6,8 @@ export PATH=$PROJECT_ROOT/third_party/MNN/build:$PATH
 ONNX="vision_encode_proj.onnx"
 MNN="vision_encode_proj.mnn"
 
-src=$PROJECT_ROOT/onnx_export
-dst=$PROJECT_ROOT/mnn_convert
+src=$PROJECT_ROOT/vision_export
+dst=$PROJECT_ROOT/vision_export
 
 if [ ! -d $dst ];then
   mkdir $dst

@@ -79,7 +79,7 @@ def register_minimind():
     mapper = ModelMapper()
     mapper.regist("minimind-v", minimind_map)
     mapper.regist("minimind", minimind_map)
-    print("[1/4] Registered minimind-v in MNN ModelMapper")
+    print("[1/6] Registered minimind-v in MNN ModelMapper")
     return mapper
 
 
@@ -151,56 +151,73 @@ def save_as_hf(model: MiniMindVLM, hf_dir: str):
                 os.path.join(hf_dir, "tokenizer_config.json"))
 
     size_mb = os.path.getsize(os.path.join(hf_dir, "pytorch_model.bin")) / (1024 * 1024)
-    print(f"[2/4] Saved HF model to {hf_dir}  ({size_mb:.1f} MB)")
+    print(f"[2/6] Saved HF model to {hf_dir}  ({size_mb:.1f} MB)")
     return hf_dir
 
 
 # ---------------------------------------------------------------------------
-# Step 3: Run MNN LlmExporter
+# Step 3: Run MNN LlmExporter → ONNX + rebuild + MNNConvert
 # ---------------------------------------------------------------------------
-def export_via_mnn(hf_dir: str, out_dir: str):
+def export_via_mnn(hf_dir: str, out_dir: str, mnnconvert_bin: str, quant_bit_val: int = 8):
     from llmexport import LlmExporter
+    import argparse as _argparse
 
-    class ExportArgs:
-        path = hf_dir
-        type = "minimind-v"
-        tokenizer_path = None
-        eagle_path = None
-        dflash_path = None
-        dflash_target_layer_ids = None
-        lora_path = None
-        gptq_path = None
-        dst_path = out_dir
-        verbose = False
-        test = None
-        export = "onnx"          # export ONNX only (not MNN)
-        onnx_slim = False
-        quant_bit = 4
-        quant_block = 64
-        visual_quant_bit = None
-        visual_quant_block = None
-        lm_quant_bit = None
-        lm_quant_block = None
-        mnnconvert = None
-        skip_weight = False
-        seperate_embed = False
-        seperate_visual = False
-        seperate_audio_model = False
-        awq = False
-        smooth = False
-        omni = False
-        hqq = False
-        lora_split = False
-        lora_split_block = 0
-        transformer_c4 = False
-
-    args = ExportArgs()
+    # Build a bare namespace matching what LlmExporter expects
+    args = _argparse.Namespace(
+        path=hf_dir,
+        type="minimind-v",
+        tokenizer_path=None,
+        eagle_path=None,
+        dflash_path=None,
+        dflash_target_layer_ids=None,
+        lora_path=None,
+        gptq_path=None,
+        dst_path=out_dir,
+        verbose=False,
+        test=None,
+        export=None,
+        onnx_slim=False,
+        quant_bit=quant_bit_val,
+        quant_block=64,
+        visual_quant_bit=None,
+        visual_quant_block=None,
+        lm_quant_bit=None,
+        lm_quant_block=None,
+        mnnconvert=mnnconvert_bin,
+        skip_weight=False,
+        seperate_embed=False,
+        seperate_visual=False,
+        seperate_audio_model=False,
+        awq=False,
+        smooth=False,
+        omni=False,
+        hqq=False,
+        lora_split=False,
+        lora_split_block=0,
+        transformer_c4=False,
+        sym=False,
+    )
     exporter = LlmExporter(args)
-    print(f"[3/4] Loaded model via LlmModel.from_pretrained()")
+    print(f"[3/6] Loaded model via LlmModel.from_pretrained()")
 
-    onnx_path = exporter.export_onnx()
-    print(f"[4/4] ONNX exported to: {onnx_path}")
-    return onnx_path
+    # 3a. Export skeleton ONNX (FakeLinear placeholders)
+    onnx_skeleton = exporter.export_onnx()
+    print(f"[4/6] Skeleton ONNX exported: {onnx_skeleton}")
+
+    # 3b. Replace FakeLinear with real weights (external data).
+    # onnx_load_param saves the full ONNX back to the original path,
+    # and returns the external data file path (we don't need it directly).
+    exporter.onnx_load_param(onnx_skeleton)
+    onnx_full = onnx_skeleton  # same file, now with real weights via external data
+    print(f"[5/6] Rebuilt ONNX with real weights")
+
+    # 3c. Convert ONNX → MNN (quantized)
+    from utils.mnn_converter import MNNConverter
+    converter = MNNConverter(exporter, exporter.unloaded_ops)
+    converter.export(onnx_full, quant_bit=quant_bit_val)
+    mnn_path = os.path.join(out_dir, "llm.mnn")
+    print(f"[6/6] MNN model exported: {mnn_path}")
+    return mnn_path
 
 
 # ---------------------------------------------------------------------------
@@ -215,8 +232,12 @@ if __name__ == "__main__":
     parser.add_argument("--use_moe", default=0, type=int, choices=[0, 1])
     parser.add_argument("--hf_dir", default="./minimind_hf_tmp", type=str,
                         help="Temp dir for HF-format model")
-    parser.add_argument("--out_dir", default="./onnx_export", type=str,
-                        help="Output dir for exported ONNX")
+    parser.add_argument("--out_dir", default="./mnn_llm_export", type=str,
+                        help="Output dir for exported MNN model")
+    parser.add_argument("--mnnconvert", default=os.path.join(MNN_EXPORT_ROOT, "../../../build/MNNConvert"), type=str,
+                        help="Path to MNNConvert binary")
+    parser.add_argument("--quant_bit", default=8, type=int, choices=[4, 8, 16, 32],
+                        help="Weight quantization bits (4/8/16/32)")
     parser.add_argument("--device", default="cpu", type=str)
     args = parser.parse_args()
 
@@ -241,7 +262,7 @@ if __name__ == "__main__":
     # --- Save HF format ---
     hf_dir = save_as_hf(model, args.hf_dir)
 
-    # --- Export ONNX via MNN-LLM ---
-    onnx_path = export_via_mnn(hf_dir, args.out_dir)
+    # --- Export via MNN-LLM (ONNX → rebuild → MNN) ---
+    mnn_path = export_via_mnn(hf_dir, args.out_dir, args.mnnconvert, args.quant_bit)
 
-    print(f"\nDone. ONNX model: {onnx_path}")
+    print(f"\nDone. MNN model: {mnn_path}")
