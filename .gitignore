@@ -1,0 +1,7 @@
+.vscode/
+vision_export/
+minimind_hf/
+llm_mnn/
+src/build/
+src/build_android/
+src/models/
