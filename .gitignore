@@ -5,3 +5,9 @@ llm_mnn/
 src/build/
 src/build_android/
 src/models/
+
+# Android
+android/.gradle/
+android/app/build/
+android/local.properties
+*.apk
