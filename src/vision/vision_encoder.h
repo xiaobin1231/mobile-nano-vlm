@@ -40,7 +40,9 @@ private:
     std::shared_ptr<MNN::Interpreter> interpreter_;
     MNN::Session* session_ = nullptr;
     MNN::Tensor* input_tensor_ = nullptr;
+    MNN::Tensor* position_tensor_ = nullptr;
     MNN::Tensor* output_tensor_ = nullptr;
+    std::vector<float> position_data_;
 };
 
 }  // namespace minimind

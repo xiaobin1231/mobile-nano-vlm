@@ -1,0 +1,19 @@
+{
+  "configs": [
+    {
+      "inputs": [
+        {
+          "name": "pixel_values",
+          "shape": [1, 3, 256, 256]
+        },
+        {
+          "name": "position_embeds",
+          "shape": [1, 768, 64]
+        }
+      ],
+      "outputs": [
+        "vision_embeddings"
+      ]
+    }
+  ]
+}

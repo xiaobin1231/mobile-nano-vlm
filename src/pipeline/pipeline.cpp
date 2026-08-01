@@ -11,8 +11,9 @@ bool Pipeline::load(const std::string& vision_model_path,
     VisionEncoder::Config vcfg;
     vcfg.model_path  = vision_model_path;
     vcfg.num_threads = num_threads;
-    // Default to Vulkan GPU, fall back to CPU
-    vcfg.backend = MNN_FORWARD_VULKAN;
+    // Offline QNN wrappers are CPU Plugin graphs whose kernels dispatch to HTP.
+    vcfg.backend = vision_model_path.find("/vision_qnn/") != std::string::npos
+        ? MNN_FORWARD_CPU : MNN_FORWARD_VULKAN;
     vision_ = std::make_unique<VisionEncoder>(vcfg);
     if (!vision_->ready()) {
         vcfg.backend = MNN_FORWARD_CPU;

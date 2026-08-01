@@ -4,11 +4,22 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJ="$(dirname "$SCRIPT_DIR")"
-SRC="$PROJ/src"
-MODELS="$SRC/models"
+MODELS="$PROJ/src/models"
 MINIMIND="$PROJ/third_party/minimind-v"
 MNN="$PROJ/third_party/MNN"
 PYTHON=python
+
+if [ "$#" -ne 0 ]; then
+    echo "Usage: $0" >&2
+    exit 1
+fi
+
+TOTAL_STEPS=5
+STEP=0
+step() {
+    STEP=$((STEP + 1))
+    echo "[$STEP/$TOTAL_STEPS] $1"
+}
 
 echo "========================================"
 echo " MiniMind-V MNN 导出 & 模型准备"
@@ -25,34 +36,21 @@ if [ ! -f "$MNN/build/MNNConvert" ]; then
     exit 1
 fi
 
-# ---- Step 1: 导出 Vision ONNX ----
-echo "[1/8] 导出 Vision ONNX ..."
 cd "$PROJ"
-$PYTHON utils/export_vision_pipeline_onnx.py
 
-# ---- Step 2: Vision ONNX → MNN ----
-echo "[2/8] 转换 Vision ONNX → MNN ..."
-mkdir -p "$PROJ/vision_export"
-"$MNN/build/MNNConvert" -f ONNX \
-    --modelFile "$PROJ/vision_export/vision_encode_proj.onnx" \
-    --MNNModel "$PROJ/vision_export/vision_encode_proj.mnn" \
-    --bizCode MNN --fp16
-
-# ---- Step 3: 导出 LLM MNN ----
-echo "[3/8] 导出 LLM MNN ..."
+# ---- Export LLM MNN ----
+step "导出 LLM MNN ..."
 $PYTHON utils/export_minimind_mnn.py
 
-# ---- Step 4: 复制模型文件 ----
-echo "[4/8] 复制模型文件 ..."
+# ---- Copy model files ----
+step "复制模型文件 ..."
 mkdir -p "$MODELS"
 cp "$PROJ/llm_mnn/llm_base_final.mnn" "$MODELS/llm.mnn"
-cp "$PROJ/vision_export/vision_encode_proj.mnn" "$MODELS/vision_encode_proj.mnn"
 touch "$MODELS/llm.mnn.weight"
 echo "  llm.mnn:                $(du -h "$MODELS/llm.mnn" | cut -f1)"
-echo "  vision_encode_proj.mnn: $(du -h "$MODELS/vision_encode_proj.mnn" | cut -f1)"
 
-# ---- Step 5: tokenizer.txt ----
-echo "[5/8] 生成 tokenizer.txt ..."
+# ---- tokenizer.txt ----
+step "生成 tokenizer.txt ..."
 $PYTHON -c "
 import json, sys
 sys.path.insert(0, '$MINIMIND')
@@ -73,8 +71,8 @@ with open('$MODELS/tokenizer.txt', 'w', encoding='utf-8') as f:
 print(f'  tokenizer.txt: {len(vocab)} vocab, {len(merges)} merges')
 "
 
-# ---- Step 6: embeddings_bf16.bin ----
-echo "[6/8] 生成 embeddings_bf16.bin ..."
+# ---- embeddings_bf16.bin ----
+step "生成 embeddings_bf16.bin ..."
 $PYTHON -c "
 import torch, numpy as np
 sd = torch.load('$MINIMIND/out/sft_vlm_768.pth', map_location='cpu')
@@ -84,8 +82,8 @@ bf16.tofile('$MODELS/embeddings_bf16.bin')
 print(f'  embeddings_bf16.bin: {bf16.nbytes} bytes ({emb.shape[0]} vocab x {emb.shape[1]} dim)')
 "
 
-# ---- Step 7: llm_config.json ----
-echo "[7/8] 生成 llm_config.json ..."
+# ---- llm_config.json ----
+step "生成 llm_config.json ..."
 $PYTHON -c "
 import json
 config = {
@@ -122,20 +120,9 @@ json.dump(config, open('$MODELS/llm_config.json', 'w'), indent=2, ensure_ascii=F
 print('  llm_config.json done')
 "
 
-# ---- Step 8: stb_image.h ----
-echo "[8/8] 下载 stb_image.h ..."
-if [ ! -f "$SRC/common/stb_image.h" ]; then
-    curl -sL -o "$SRC/common/stb_image.h" \
-        https://raw.githubusercontent.com/nothings/stb/master/stb_image.h
-    echo "  stb_image.h 已下载 ($(wc -l < "$SRC/common/stb_image.h") 行)"
-else
-    echo "  stb_image.h 已存在"
-fi
-
 echo ""
 echo "========================================"
 echo " 导出 & 模型准备完成！"
 echo ""
 echo " 模型: $MODELS/"
-echo " 编译: bash scripts/build.sh linux|android"
 echo "========================================"

@@ -1,0 +1,9 @@
+{
+  "type": "QNN",
+  "skips": [],
+  "testdir": [
+    "testdir/0"
+  ],
+  "KVCACHE_SIZE_LIMIT": 0,
+  "cache": "qnn"
+}

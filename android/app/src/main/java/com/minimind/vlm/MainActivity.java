@@ -60,6 +60,15 @@ public class MainActivity extends AppCompatActivity {
 
         // Attach image button
         attachBtn.setOnClickListener(v -> pickImage());
+
+        // Optional adb smoke test; normal launches do not provide this extra.
+        String smokePrompt = getIntent().getStringExtra("qnn_smoke_prompt");
+        if (!TextUtils.isEmpty(smokePrompt)) {
+            String smokeImage = getIntent().getStringExtra("qnn_smoke_image");
+            if (!TextUtils.isEmpty(smokeImage)) pendingImagePath = smokeImage;
+            input.setText(smokePrompt);
+            sendMessage();
+        }
     }
 
     private void pickImage() {
@@ -158,6 +167,7 @@ public class MainActivity extends AppCompatActivity {
         ProcessBuilder pb = new ProcessBuilder(
             "/system/bin/linker64", runner.binaryPath, "vision", runner.modelDir,
             runner.visionModel, imagePath, prompt);
+        runner.configureQnnEnvironment(pb);
         pb.redirectErrorStream(true);
         Process p = pb.start();
 
@@ -175,6 +185,7 @@ public class MainActivity extends AppCompatActivity {
     private void runTextSync(String prompt, ModelRunner.Callback cb) throws Exception {
         ProcessBuilder pb = new ProcessBuilder(
             "/system/bin/linker64", runner.binaryPath, "text", runner.modelDir, prompt);
+        runner.configureQnnEnvironment(pb);
         pb.redirectErrorStream(true);
         Process p = pb.start();
 

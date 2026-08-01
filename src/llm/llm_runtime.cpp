@@ -1,6 +1,7 @@
 #include "llm/llm_runtime.h"
 #include "common/types.h"
 #include <cstring>
+#include <fstream>
 #include <MNN/expr/Expr.hpp>
 
 using namespace MNN::Express;
@@ -13,7 +14,11 @@ LlmRuntime::~LlmRuntime() {
 }
 
 bool LlmRuntime::load(const std::string& config_dir, int num_threads, bool low_precision) {
-    llm_ = Llm::createLLM(config_dir + "/llm_config.json");
+    const std::string qnn_config = config_dir + "/llm_config_qnn.json";
+    std::ifstream qnn_file(qnn_config);
+    const std::string config_path = qnn_file.good()
+        ? qnn_config : config_dir + "/llm_config.json";
+    llm_ = Llm::createLLM(config_path);
     if (!llm_) return false;
 
     std::string ov = "{"

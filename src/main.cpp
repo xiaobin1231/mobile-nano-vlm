@@ -35,13 +35,60 @@ int main(int argc, char* argv[]) {
         std::cerr << "Usage:\n"
                   << "  " << argv[0] << " text <config_dir> <prompt>\n"
                   << "  " << argv[0] << " vision <config_dir> <vision.mnn> <image.jpg> <prompt>\n"
-                  << "  " << argv[0] << " test <config_dir>\n";
+                  << "  " << argv[0] << " test <config_dir>\n"
+                  << "  " << argv[0] << " image_dump <image.jpg> <output.bin>\n"
+                  << "  " << argv[0] << " vision_dump <vision.mnn> <image.jpg> <output.bin>\n";
         return 1;
     }
     std::string mode = argv[1];
     std::string config_dir = (argc > 2) ? argv[2] : "models";
 
-    if (mode == "text") {
+    if (mode == "image_dump") {
+        if (argc < 4) {
+            std::cerr << "Usage: image_dump <image.jpg> <output.bin>" << std::endl;
+            return 1;
+        }
+        int w, h;
+        auto img = load_image(argv[2], &w, &h);
+        if (img.empty()) return 1;
+        ImagePreprocess::Config pcfg;
+        pcfg.src_width = w;
+        pcfg.src_height = h;
+        ImagePreprocess preproc(pcfg);
+        auto pixels = preproc.run(img.data());
+        std::ofstream out(argv[3], std::ios::binary);
+        out.write(reinterpret_cast<const char*>(pixels.data()),
+                  pixels.size() * sizeof(float));
+        if (!out) return 1;
+        std::cout << "Dumped " << pixels.size() << " preprocessed floats" << std::endl;
+    } else if (mode == "vision_dump") {
+        if (argc < 5) {
+            std::cerr << "Usage: vision_dump <vision.mnn> <image.jpg> <output.bin>" << std::endl;
+            return 1;
+        }
+        int w, h;
+        auto img = load_image(argv[3], &w, &h);
+        if (img.empty()) return 1;
+        ImagePreprocess::Config pcfg;
+        pcfg.src_width = w;
+        pcfg.src_height = h;
+        ImagePreprocess preproc(pcfg);
+        auto pixels = preproc.run(img.data());
+        VisionEncoder::Config vcfg;
+        vcfg.model_path = argv[2];
+        vcfg.backend = MNN_FORWARD_CPU;
+        VisionEncoder vision(vcfg);
+        if (!vision.ready()) {
+            std::cerr << "Vision load failed" << std::endl;
+            return 1;
+        }
+        auto embeddings = vision.forward(pixels.data());
+        std::ofstream out(argv[4], std::ios::binary);
+        out.write(reinterpret_cast<const char*>(embeddings.data()),
+                  embeddings.size() * sizeof(float));
+        if (!out) return 1;
+        std::cout << "Dumped " << embeddings.size() << " floats" << std::endl;
+    } else if (mode == "text") {
         if (argc < 4) { std::cerr << "Usage: text <config_dir> <prompt>" << std::endl; return 1; }
         std::string prompt = argv[3];
         LlmRuntime llm;

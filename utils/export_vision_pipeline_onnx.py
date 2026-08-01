@@ -11,12 +11,24 @@ import torch.nn as nn
 class VisionPipeline(nn.Module):
     def __init__(self, encoder, projector):
         super().__init__()
-        self.encoder = encoder
+        # Transformers 新版 SiglipVisionModel 在外层增加了 vision_model；
+        # 旧版则直接暴露 embeddings / encoder / post_layernorm。
+        self.encoder = getattr(encoder, "vision_model", encoder)
         self.projector = projector
 
-    def forward(self, pixel_values):
-        encoder_outputs = self.encoder(pixel_values)
-        image_features = encoder_outputs.last_hidden_state
+    def forward(self, pixel_values, position_embeds):
+        # SigLIP normally transposes patch embeddings to [B, N, C] and then
+        # adds [1, N, C] positional embeddings. MNN's QNN layout conversion
+        # keeps the patch tensor as [B, C, N] at that point, which makes the
+        # static Add fail QNN validation. Perform the mathematically identical
+        # Add before the transpose so both operands are explicitly [B, C, N].
+        embeddings = self.encoder.embeddings
+        target_dtype = embeddings.patch_embedding.weight.dtype
+        patch_embeds = embeddings.patch_embedding(pixel_values.to(dtype=target_dtype))
+        hidden_states = (patch_embeds.flatten(2) + position_embeds).transpose(1, 2)
+
+        encoder_outputs = self.encoder.encoder(inputs_embeds=hidden_states)
+        image_features = self.encoder.post_layernorm(encoder_outputs.last_hidden_state)
         projected_features = self.projector(image_features)
         return projected_features
 
@@ -25,22 +37,37 @@ def export_vision_to_onnx(model: MiniMindVLM, export_path="vision_encode_proj.on
     vision_pipeline.float().eval()
 
     dummy_input = torch.randn(1, 3, 256, 256, dtype=torch.float32)
+    position_input = (
+        vision_pipeline.encoder.embeddings.position_embedding.weight
+        .transpose(0, 1).unsqueeze(0).detach().float()
+    )
+
+    with torch.no_grad():
+        reference = model.vision_proj(model.vision_encoder(dummy_input).last_hidden_state)
+        rewritten = vision_pipeline(dummy_input, position_input)
+        max_diff = (reference - rewritten).abs().max().item()
+        print(f"QNN-friendly position Add verification max diff: {max_diff:.8g}")
+        if max_diff > 1e-5:
+            raise RuntimeError(f"Vision graph rewrite changed output: max diff={max_diff}")
 
     print("Start export vision pipeline ONNX...")
     torch.onnx.export(
         vision_pipeline,
-        dummy_input,
+        (dummy_input, position_input),
         export_path,
         export_params=True,
         opset_version=14,
         do_constant_folding=True,
-        input_names=['pixel_values'],
+        input_names=['pixel_values', 'position_embeds'],
         output_names=['vision_embeddings'],
         dynamic_axes={
             'pixel_values': {0: 'batch_size'},
             'vision_embeddings': {0: 'batch_size'}
         }
     )
+    position_path = os.path.join(os.path.dirname(export_path), "vision_position_f32.bin")
+    position_input.contiguous().numpy().tofile(position_path)
+    print(f"Position input saved: {position_path} ({position_input.numel() * 4} bytes)")
     print(f"Export success: {export_path}")
 
 if __name__ == "__main__":

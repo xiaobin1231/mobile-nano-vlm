@@ -32,12 +32,13 @@ public class ModelRunner {
 
         binaryPath = new File(localDir, "minimind_cli").getAbsolutePath();
         modelDir = new File(localDir, "models").getAbsolutePath();
-        visionModel = new File(modelDir, "vision_encode_proj.mnn").getAbsolutePath();
-
-        // Auto-copy from /data/local/tmp/ on first launch
-        if (!new File(binaryPath).canExecute()) {
+        // Copy missing/updated files, including nested QNN graphs and runtime libs.
+        if (new File(SRC_ROOT).isDirectory()) {
             bootstrap(ctx, localDir);
         }
+        File qnnVision = new File(modelDir, "vision_qnn/vision.mnn");
+        visionModel = (qnnVision.isFile() ? qnnVision
+            : new File(modelDir, "vision_encode_proj.mnn")).getAbsolutePath();
     }
 
     /** Copy binary + models from /data/local/tmp/ into app-local storage. */
@@ -51,17 +52,27 @@ public class ModelRunner {
             copyFile(srcBin, dstBin);
             dstBin.setExecutable(true);
 
-            // Copy models directory
-            new File(modelDir).mkdirs();
-            if (srcModels.isDirectory()) {
-                for (File f : srcModels.listFiles()) {
-                    if (f.isFile()) {
-                        copyFile(f, new File(modelDir, f.getName()));
-                    }
-                }
-            }
+            copyTree(srcModels, new File(modelDir));
         } catch (Exception e) {
             // Bootstrap failed — isReady() will report false
+        }
+    }
+
+    private void copyTree(File src, File dst) throws Exception {
+        if (src.isDirectory()) {
+            dst.mkdirs();
+            File[] children = src.listFiles();
+            if (children != null) {
+                for (File child : children) {
+                    copyTree(child, new File(dst, child.getName()));
+                }
+            }
+            return;
+        }
+        if (!dst.isFile() || dst.length() != src.length()
+                || dst.lastModified() < src.lastModified()) {
+            copyFile(src, dst);
+            dst.setLastModified(src.lastModified());
         }
     }
 
@@ -85,6 +96,7 @@ public class ModelRunner {
             try {
                 ProcessBuilder pb = new ProcessBuilder(
                     "/system/bin/linker64", binaryPath, "vision", modelDir, visionModel, imagePath, prompt);
+                configureQnnEnvironment(pb);
                 pb.redirectErrorStream(true);
                 Process p = pb.start();
 
@@ -114,6 +126,7 @@ public class ModelRunner {
             try {
                 ProcessBuilder pb = new ProcessBuilder(
                     "/system/bin/linker64", binaryPath, "text", modelDir, prompt);
+                configureQnnEnvironment(pb);
                 pb.redirectErrorStream(true);
                 Process p = pb.start();
 
@@ -139,6 +152,15 @@ public class ModelRunner {
 
     public boolean isReady() {
         return new File(binaryPath).canExecute()
-            && new File(modelDir, "llm.mnn").exists();
+            && (new File(modelDir, "qnn/llm.mnn").isFile()
+                || new File(modelDir, "llm.mnn").isFile());
+    }
+
+    void configureQnnEnvironment(ProcessBuilder pb) {
+        String libDir = new File(modelDir, "qnn/lib").getAbsolutePath();
+        String oldLd = pb.environment().get("LD_LIBRARY_PATH");
+        pb.environment().put("LD_LIBRARY_PATH",
+            oldLd == null || oldLd.isEmpty() ? libDir : libDir + ":" + oldLd);
+        pb.environment().put("ADSP_LIBRARY_PATH", libDir);
     }
 }

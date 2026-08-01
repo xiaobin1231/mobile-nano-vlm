@@ -46,6 +46,11 @@ case "$PLATFORM" in
       echo "错误: CMake 未找到: $CMAKE_BIN"
       exit 1
     fi
+    QNN_SDK_ROOT="${QNN_SDK_ROOT:?请设置: export QNN_SDK_ROOT=/path/to/qairt}"
+    if [ ! -d "$QNN_SDK_ROOT/include/QNN" ]; then
+      echo "错误: QNN SDK 无效: $QNN_SDK_ROOT"
+      exit 1
+    fi
 
     TOOLCHAIN=(
       -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake"
@@ -54,7 +59,11 @@ case "$PLATFORM" in
     )
     MNN_EXTRA_FLAGS="
       -DMNN_BUILD_SHARED_LIBS=OFF
+      -DCMAKE_CXX_STANDARD=20
       -DMNN_ARM82=ON
+      -DMNN_QNN=ON
+      -DMNN_QNN_ONLINE_FINALIZE=OFF
+      -DMNN_WITH_PLUGIN=ON
       -DMNN_OPENCL=OFF
       -DMNN_VULKAN=ON
       -DMNN_BUILD_FOR_ANDROID_COMMAND=ON

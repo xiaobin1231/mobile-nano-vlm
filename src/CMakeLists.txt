@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD 17)
 # ---- Detect platform ----
 if(ANDROID)
     message(STATUS "Building for Android ${ANDROID_ABI}")
-    set(PLATFORM_LIBS log)  # Android log library
+    set(PLATFORM_LIBS log dl)  # Android log and QNN runtime loading
 else()
     message(STATUS "Building for Linux")
     set(PLATFORM_LIBS pthread dl)

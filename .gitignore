@@ -2,9 +2,11 @@
 vision_export/
 minimind_hf/
 llm_mnn/
+build/
 src/build/
 src/build_android/
 src/models/
+artifacts/
 
 # Android
 android/.gradle/
