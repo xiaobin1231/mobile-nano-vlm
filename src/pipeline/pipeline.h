@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <iosfwd>
 #include "preprocess/image_preprocess.h"
 #include "vision/vision_encoder.h"
 #include "llm/llm_runtime.h"
@@ -12,6 +13,19 @@ namespace minimind {
 /// Full MiniMind-V inference pipeline.
 class Pipeline {
 public:
+    struct Profile {
+        double preprocess_ms = 0.0;
+        double vision_ms = 0.0;
+        double tokenize_ms = 0.0;
+        double embedding_ms = 0.0;
+        double mix_ms = 0.0;
+        double llm_ms = 0.0;
+        double prefill_ms = 0.0;
+        double decode_ms = 0.0;
+        int prompt_tokens = 0;
+        int generated_tokens = 0;
+    };
+
     Pipeline() = default;
 
     /// Load vision + LLM models.
@@ -31,9 +45,19 @@ public:
     std::string run(const uint8_t* rgb_u8, int width, int height,
                     const std::string& prompt, int max_tokens = 256);
 
+    /// Stateless streaming request APIs used by the resident server.
+    bool run_text(const std::string& prompt, std::ostream& output,
+                  int max_tokens = 256);
+    bool run_vision(const uint8_t* rgb_u8, int width, int height,
+                    const std::string& prompt, std::ostream& output,
+                    int max_tokens = 256);
+
+    const Profile& last_profile() const { return last_profile_; }
+
 private:
     std::unique_ptr<VisionEncoder> vision_;
     std::unique_ptr<LlmRuntime>    llm_;
+    Profile last_profile_;
 
     static void mix_embeddings(const std::vector<int32_t>& input_ids,
                                const float* vision_emb,

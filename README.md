@@ -29,6 +29,7 @@ mkdir -p "$DEPS_ROOT"
 | Qualcomm AI Runtime SDK | 2.48.0.260626 | [Qualcomm Software Center](https://softwarecenter.qualcomm.com/catalog/item/Qualcomm_AI_Runtime_Community) |
 | Android NDK | r27d | [Android NDK Downloads](https://developer.android.com/ndk/downloads) |
 | CMake | 4.3.4 Linux x86_64 | [CMake Downloads](https://cmake.org/download/) |
+| JDK | 17（仅编译 Android App） | [Eclipse Temurin](https://adoptium.net/temurin/releases/?version=17) |
 
 QAIRT 下载需要登录 Qualcomm Software Center，并接受相应许可。选择
 `Qualcomm AI Runtime Community` 的 `2.48.0.260626`，下载文件名应类似
@@ -123,7 +124,45 @@ source scripts/env_setup.sh
 /data/local/tmp/mobile-nano-vlm
 ```
 
-## 4. 真机运行
+如需图形化 Android App，使用 JDK 17 构建并安装：
+
+```bash
+export JAVA_HOME=/path/to/jdk-17
+(cd android && ./gradlew assembleDebug)
+./scripts/deploy_qnn_android.sh --install-apk
+```
+
+App 会以前台服务常驻模型，通过内部 Unix Domain Socket 流式收取结果；用户
+不需要配置 Socket 地址或最大生成 token 数。详见
+[Android App 常驻服务集成](docs/android-app-integration.md)。
+
+## 4. 启动常驻推理服务
+
+启动后模型和 QNN Context 只加载一次：
+
+```bash
+./scripts/vlm_daemon.sh start
+./scripts/vlm_daemon.sh status
+```
+
+进入手机发送请求：
+
+```sh
+cd /data/local/tmp/mobile-nano-vlm
+
+./minimind_cli client text '你好'
+./minimind_cli client vision test_image.jpg '请描述这张图片'
+```
+
+停止服务：
+
+```bash
+./scripts/vlm_daemon.sh stop
+```
+
+协议和调试方法见[常驻 VLM 推理服务](docs/vlm-daemon.md)。
+
+## 5. 单次命令运行
 
 在主机推送测试图片：
 
@@ -155,7 +194,9 @@ export ADSP_LIBRARY_PATH=$PWD/models/qnn/lib
 
 正常情况下会打印图片尺寸、推理耗时和图片描述。
 
-## 5. 详细说明
+## 6. 详细说明
 
 - [Vision QNN 转换流程](docs/vision-qnn-conversion.md)
 - [LLM QNN 转换流程](docs/llm-qnn-conversion.md)
+- [常驻 VLM 推理服务](docs/vlm-daemon.md)
+- [端侧性能分析](docs/performance.md)

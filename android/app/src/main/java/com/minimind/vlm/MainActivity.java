@@ -1,15 +1,20 @@
 package com.minimind.vlm;
 
+import android.Manifest;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.provider.MediaStore;
 import android.text.TextUtils;
+import android.util.Log;
 import android.widget.EditText;
 import android.widget.ImageButton;
 import android.widget.Toast;
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.content.ContextCompat;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 import java.io.File;
@@ -17,16 +22,17 @@ import java.io.FileOutputStream;
 import java.io.InputStream;
 
 public class MainActivity extends AppCompatActivity {
-
+    private static final String TAG = "MiniMindVLM";
     private static final int REQUEST_IMAGE_PICK = 100;
+    private static final int REQUEST_NOTIFICATIONS = 101;
 
     private RecyclerView chatList;
     private EditText input;
-    private ImageButton sendBtn, attachBtn;
+    private ImageButton sendBtn;
+    private ImageButton attachBtn;
     private ChatAdapter adapter;
     private ModelRunner runner;
-
-    private String pendingImagePath;  // image selected but not yet sent
+    private String pendingImagePath;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -43,31 +49,37 @@ public class MainActivity extends AppCompatActivity {
         chatList.setAdapter(adapter);
 
         runner = new ModelRunner(this);
+        requestNotificationPermission();
 
         if (!runner.isReady()) {
             adapter.add(ChatMessage.system(
-                "模型未就绪。请确保 /data/local/tmp/mobile-nano-vlm/ 下有:\n" +
-                "  minimind_cli\n" +
-                "  models/llm.mnn\n" +
-                "  models/vision_encode_proj.mnn\n" +
-                "首次启动会自动复制到应用目录"));
+                "模型未就绪。请先将 minimind_cli 和 QNN 模型部署到 "
+                + "/data/local/tmp/mobile-nano-vlm/，再重新打开 App。"));
+            setInputEnabled(false);
         } else {
-            adapter.add(ChatMessage.system("MiniMind VLM 已就绪，可以开始对话。"));
+            adapter.add(ChatMessage.system("模型资源已就绪，后台服务正在加载模型。"));
         }
 
-        // Send button
-        sendBtn.setOnClickListener(v -> sendMessage());
+        sendBtn.setOnClickListener(view -> sendMessage());
+        attachBtn.setOnClickListener(view -> pickImage());
 
-        // Attach image button
-        attachBtn.setOnClickListener(v -> pickImage());
-
-        // Optional adb smoke test; normal launches do not provide this extra.
         String smokePrompt = getIntent().getStringExtra("qnn_smoke_prompt");
-        if (!TextUtils.isEmpty(smokePrompt)) {
+        if (!TextUtils.isEmpty(smokePrompt) && runner.isReady()) {
             String smokeImage = getIntent().getStringExtra("qnn_smoke_image");
             if (!TextUtils.isEmpty(smokeImage)) pendingImagePath = smokeImage;
             input.setText(smokePrompt);
             sendMessage();
+        }
+    }
+
+    private void requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= 33
+                && ContextCompat.checkSelfPermission(this,
+                    Manifest.permission.POST_NOTIFICATIONS)
+                    != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(
+                new String[] {Manifest.permission.POST_NOTIFICATIONS},
+                REQUEST_NOTIFICATIONS);
         }
     }
 
@@ -78,131 +90,101 @@ public class MainActivity extends AppCompatActivity {
     }
 
     @Override
-    protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
+    protected void onActivityResult(int requestCode, int resultCode,
+                                    @Nullable Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode != REQUEST_IMAGE_PICK || resultCode != RESULT_OK
                 || data == null || data.getData() == null) return;
 
-        // Copy selected image to app-local storage
         Uri uri = data.getData();
-        try (InputStream is = getContentResolver().openInputStream(uri)) {
-            File local = new File(getCacheDir(), "upload_" + System.currentTimeMillis() + ".jpg");
-            try (FileOutputStream os = new FileOutputStream(local)) {
-                byte[] buf = new byte[8192];
-                int n;
-                while ((n = is.read(buf)) != -1) os.write(buf, 0, n);
+        try (InputStream source = getContentResolver().openInputStream(uri)) {
+            if (source == null) throw new IllegalStateException("无法打开图片");
+            File local = new File(
+                getCacheDir(), "upload_" + System.currentTimeMillis() + ".jpg");
+            try (FileOutputStream destination = new FileOutputStream(local)) {
+                byte[] buffer = new byte[8192];
+                int count;
+                while ((count = source.read(buffer)) != -1) {
+                    destination.write(buffer, 0, count);
+                }
             }
             pendingImagePath = local.getAbsolutePath();
             input.setHint("输入问题（将使用已选图片）...");
             Toast.makeText(this, "图片已选择", Toast.LENGTH_SHORT).show();
-        } catch (Exception e) {
-            Toast.makeText(this, "读取图片失败: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+        } catch (Exception exception) {
+            Toast.makeText(this, "读取图片失败: " + exception.getMessage(),
+                Toast.LENGTH_SHORT).show();
         }
     }
 
     private void sendMessage() {
-        String text = input.getText().toString().trim();
-        if (TextUtils.isEmpty(text)) return;
+        String prompt = input.getText().toString().trim();
+        if (TextUtils.isEmpty(prompt) || runner == null || !runner.isReady()) return;
 
         boolean hasImage = pendingImagePath != null;
-        final String imagePath = pendingImagePath;
+        String imagePath = pendingImagePath;
         pendingImagePath = null;
         input.setText("");
         input.setHint("输入问题...");
 
-        // Show user message
-        if (hasImage) {
-            adapter.add(ChatMessage.userImage(text, imagePath));
-        } else {
-            adapter.add(ChatMessage.user(text));
-        }
-
-        // Placeholder for assistant
+        adapter.add(hasImage
+            ? ChatMessage.userImage(prompt, imagePath)
+            : ChatMessage.user(prompt));
         adapter.add(ChatMessage.assistant("思考中..."));
         chatList.scrollToPosition(adapter.getItemCount() - 1);
         setInputEnabled(false);
 
-        ModelRunner.Callback cb = new ModelRunner.Callback() {
-            private final StringBuilder fullResponse = new StringBuilder();
+        ModelRunner.Callback callback = new ModelRunner.Callback() {
+            private final StringBuilder response = new StringBuilder();
 
             @Override
-            public void onOutput(String text) {
-                fullResponse.append(text).append("\n");
-                runOnUiThread(() -> {
-                    adapter.updateLast(fullResponse.toString().trim());
-                    chatList.scrollToPosition(adapter.getItemCount() - 1);
-                });
+            public void onOutput(String chunk) {
+                response.append(chunk);
+                adapter.updateLast(response.toString());
+                chatList.scrollToPosition(adapter.getItemCount() - 1);
+            }
+
+            @Override
+            public void onComplete(ModelRunner.InferenceStats stats) {
+                if (response.length() == 0) adapter.updateLast("模型未生成文本");
+                Log.i(TAG, "total=" + stats.totalMs
+                    + "ms imageLoad=" + stats.imageLoadMs
+                    + "ms preprocess=" + stats.preprocessMs
+                    + "ms vision=" + stats.visionMs
+                    + "ms tokenize=" + stats.tokenizeMs
+                    + "ms embedding=" + stats.embeddingMs
+                    + "ms mix=" + stats.mixMs
+                    + "ms llm=" + stats.llmMs
+                    + "ms prefill=" + stats.prefillMs
+                    + "ms decode=" + stats.decodeMs
+                    + "ms tokens=" + stats.promptTokens
+                    + "+" + stats.generatedTokens);
+                setInputEnabled(true);
             }
 
             @Override
             public void onError(String error) {
-                runOnUiThread(() -> {
-                    adapter.updateLast("错误: " + error);
-                    setInputEnabled(true);
-                });
+                adapter.updateLast("错误: " + error);
+                setInputEnabled(true);
             }
         };
 
-        // Run in background
-        new Thread(() -> {
-            try {
-                // Synchronous: wait for full output
-                if (hasImage) {
-                    runVisionSync(imagePath, text, cb);
-                } else {
-                    runTextSync(text, cb);
-                }
-                runOnUiThread(() -> setInputEnabled(true));
-            } catch (Exception e) {
-                runOnUiThread(() -> {
-                    adapter.updateLast("错误: " + e.getMessage());
-                    setInputEnabled(true);
-                });
-            }
-        }).start();
-    }
-
-    private void runVisionSync(String imagePath, String prompt, ModelRunner.Callback cb)
-            throws Exception {
-        ProcessBuilder pb = new ProcessBuilder(
-            "/system/bin/linker64", runner.binaryPath, "vision", runner.modelDir,
-            runner.visionModel, imagePath, prompt);
-        runner.configureQnnEnvironment(pb);
-        pb.redirectErrorStream(true);
-        Process p = pb.start();
-
-        try (java.io.BufferedReader r = new java.io.BufferedReader(
-                new java.io.InputStreamReader(p.getInputStream()))) {
-            String line;
-            while ((line = r.readLine()) != null) {
-                cb.onOutput(line);
-            }
+        if (hasImage) {
+            runner.runVision(imagePath, prompt, callback);
+        } else {
+            runner.runText(prompt, callback);
         }
-        int code = p.waitFor();
-        if (code != 0) cb.onError("exit code " + code);
-    }
-
-    private void runTextSync(String prompt, ModelRunner.Callback cb) throws Exception {
-        ProcessBuilder pb = new ProcessBuilder(
-            "/system/bin/linker64", runner.binaryPath, "text", runner.modelDir, prompt);
-        runner.configureQnnEnvironment(pb);
-        pb.redirectErrorStream(true);
-        Process p = pb.start();
-
-        try (java.io.BufferedReader r = new java.io.BufferedReader(
-                new java.io.InputStreamReader(p.getInputStream()))) {
-            String line;
-            while ((line = r.readLine()) != null) {
-                cb.onOutput(line);
-            }
-        }
-        int code = p.waitFor();
-        if (code != 0) cb.onError("exit code " + code);
     }
 
     private void setInputEnabled(boolean enabled) {
         input.setEnabled(enabled);
         sendBtn.setEnabled(enabled);
         attachBtn.setEnabled(enabled);
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (runner != null) runner.close();
+        super.onDestroy();
     }
 }

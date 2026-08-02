@@ -2,6 +2,7 @@
 #include "common/types.h"
 #include <cstring>
 #include <fstream>
+#include <ostream>
 #include <MNN/expr/Expr.hpp>
 
 using namespace MNN::Express;
@@ -81,6 +82,39 @@ std::vector<int32_t> LlmRuntime::generate(
     auto embeds_varp = _Const(embeds, {seq_len, 1, kHiddenSize},
                               NCHW, halide_type_of<float>());
     return llm_->generate(embeds_varp, max_new_tokens);
+}
+
+bool LlmRuntime::respond(const std::vector<int32_t>& input_ids,
+                         std::ostream& output, int max_new_tokens) {
+    if (!llm_ || input_ids.empty()) return false;
+    // Every daemon request is independent in protocol v1. Reset explicitly so
+    // KV/history/output state cannot leak from the previous client request.
+    llm_->reset();
+    llm_->response(input_ids, &output, "", max_new_tokens);
+    update_generation_stats();
+    return output.good();
+}
+
+bool LlmRuntime::respond(const float* embeds, int seq_len,
+                         std::ostream& output, int max_new_tokens) {
+    if (!llm_ || embeds == nullptr || seq_len <= 0) return false;
+    auto embeds_varp = _Const(embeds, {seq_len, 1, kHiddenSize},
+                              NCHW, halide_type_of<float>());
+    llm_->reset();
+    llm_->response(embeds_varp, &output, "", max_new_tokens);
+    update_generation_stats();
+    return output.good();
+}
+
+void LlmRuntime::update_generation_stats() {
+    last_stats_ = {};
+    if (!llm_) return;
+    const auto* context = llm_->getContext();
+    if (!context) return;
+    last_stats_.prefill_ms = context->prefill_us / 1000.0;
+    last_stats_.decode_ms = context->decode_us / 1000.0;
+    last_stats_.prompt_tokens = context->prompt_len;
+    last_stats_.generated_tokens = context->gen_seq_len;
 }
 
 }  // namespace minimind

@@ -1,6 +1,7 @@
 #include "pipeline/pipeline.h"
 #include "common/types.h"
 #include "common/stb_image.h"
+#include "server/vlm_service.h"
 #include <iostream>
 #include <fstream>
 #include <vector>
@@ -36,12 +37,35 @@ int main(int argc, char* argv[]) {
                   << "  " << argv[0] << " text <config_dir> <prompt>\n"
                   << "  " << argv[0] << " vision <config_dir> <vision.mnn> <image.jpg> <prompt>\n"
                   << "  " << argv[0] << " test <config_dir>\n"
+                  << "  " << argv[0] << " server <config_dir> <vision.mnn> [threads]\n"
+                  << "  " << argv[0] << " client {ping|shutdown|text|vision} ...\n"
                   << "  " << argv[0] << " image_dump <image.jpg> <output.bin>\n"
                   << "  " << argv[0] << " vision_dump <vision.mnn> <image.jpg> <output.bin>\n";
         return 1;
     }
     std::string mode = argv[1];
     std::string config_dir = (argc > 2) ? argv[2] : "models";
+
+    if (mode == "server") {
+        if (argc < 4) {
+            std::cerr << "Usage: server <config_dir> <vision.mnn> [threads]"
+                      << std::endl;
+            return 1;
+        }
+        int threads = 4;
+        if (argc > 4) {
+            try {
+                threads = std::stoi(argv[4]);
+            } catch (...) {
+                std::cerr << "Invalid thread count: " << argv[4] << std::endl;
+                return 1;
+            }
+        }
+        return run_vlm_server(argv[2], argv[3], threads);
+    }
+    if (mode == "client") {
+        return run_vlm_client(argc, argv);
+    }
 
     if (mode == "image_dump") {
         if (argc < 4) {

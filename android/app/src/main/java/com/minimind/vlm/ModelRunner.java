@@ -1,166 +1,178 @@
 package com.minimind.vlm;
 
 import android.content.Context;
+import android.content.Intent;
+import android.net.LocalSocket;
+import android.net.LocalSocketAddress;
 import android.os.Handler;
 import android.os.Looper;
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.io.InputStreamReader;
-import java.nio.channels.FileChannel;
+import androidx.core.content.ContextCompat;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.EOFException;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import org.json.JSONObject;
 
-/**
- * Runs minimind_cli binary in a background thread and returns the output.
- * On first launch, copies binary + models from /data/local/tmp/ to app-local storage.
- */
-public class ModelRunner {
-    // Source: where adb pushes the files
-    private static final String SRC_ROOT = "/data/local/tmp/mobile-nano-vlm";
+/** Serial, streaming client for the resident minimind_cli server. */
+public final class ModelRunner implements AutoCloseable {
+    private static final String INTERNAL_SOCKET_NAME = "minimind_vlm";
+    private static final int MAX_FRAME_SIZE = 1024 * 1024;
+    private static final long CONNECT_TIMEOUT_MS = 30_000;
 
-    final String binaryPath;
-    final String modelDir;
-    final String visionModel;
+    private final Context appContext;
+    private final ModelStorage storage;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
-    public ModelRunner(Context ctx) {
-        File localDir = new File(ctx.getFilesDir(), "minimind");
-        localDir.mkdirs();
-
-        binaryPath = new File(localDir, "minimind_cli").getAbsolutePath();
-        modelDir = new File(localDir, "models").getAbsolutePath();
-        // Copy missing/updated files, including nested QNN graphs and runtime libs.
-        if (new File(SRC_ROOT).isDirectory()) {
-            bootstrap(ctx, localDir);
-        }
-        File qnnVision = new File(modelDir, "vision_qnn/vision.mnn");
-        visionModel = (qnnVision.isFile() ? qnnVision
-            : new File(modelDir, "vision_encode_proj.mnn")).getAbsolutePath();
-    }
-
-    /** Copy binary + models from /data/local/tmp/ into app-local storage. */
-    private void bootstrap(Context ctx, File localDir) {
-        try {
-            File srcBin = new File(SRC_ROOT, "minimind_cli");
-            File srcModels = new File(SRC_ROOT, "models");
-
-            // Copy binary
-            File dstBin = new File(localDir, "minimind_cli");
-            copyFile(srcBin, dstBin);
-            dstBin.setExecutable(true);
-
-            copyTree(srcModels, new File(modelDir));
-        } catch (Exception e) {
-            // Bootstrap failed — isReady() will report false
-        }
-    }
-
-    private void copyTree(File src, File dst) throws Exception {
-        if (src.isDirectory()) {
-            dst.mkdirs();
-            File[] children = src.listFiles();
-            if (children != null) {
-                for (File child : children) {
-                    copyTree(child, new File(dst, child.getName()));
-                }
-            }
-            return;
-        }
-        if (!dst.isFile() || dst.length() != src.length()
-                || dst.lastModified() < src.lastModified()) {
-            copyFile(src, dst);
-            dst.setLastModified(src.lastModified());
-        }
-    }
-
-    private void copyFile(File src, File dst) throws Exception {
-        try (FileInputStream fis = new FileInputStream(src);
-             FileOutputStream fos = new FileOutputStream(dst);
-             FileChannel in = fis.getChannel();
-             FileChannel out = fos.getChannel()) {
-            in.transferTo(0, in.size(), out);
-        }
-    }
-
     public interface Callback {
         void onOutput(String text);
+        void onComplete(InferenceStats stats);
         void onError(String error);
     }
 
-    /** Vision + text inference. */
-    public void runVision(String imagePath, String prompt, Callback cb) {
-        executor.execute(() -> {
-            try {
-                ProcessBuilder pb = new ProcessBuilder(
-                    "/system/bin/linker64", binaryPath, "vision", modelDir, visionModel, imagePath, prompt);
-                configureQnnEnvironment(pb);
-                pb.redirectErrorStream(true);
-                Process p = pb.start();
+    public static final class InferenceStats {
+        public final long totalMs;
+        public final double imageLoadMs;
+        public final double preprocessMs;
+        public final double visionMs;
+        public final double tokenizeMs;
+        public final double embeddingMs;
+        public final double mixMs;
+        public final double llmMs;
+        public final double prefillMs;
+        public final double decodeMs;
+        public final int promptTokens;
+        public final int generatedTokens;
 
-                StringBuilder out = new StringBuilder();
-                try (BufferedReader r = new BufferedReader(
-                        new InputStreamReader(p.getInputStream()))) {
-                    String line;
-                    while ((line = r.readLine()) != null) {
-                        out.append(line).append("\n");
-                        String partial = line;
-                        mainHandler.post(() -> cb.onOutput(partial));
-                    }
-                }
-                int code = p.waitFor();
-                if (code != 0) {
-                    mainHandler.post(() -> cb.onError("Exit code " + code + ": " + out));
-                }
-            } catch (Exception e) {
-                mainHandler.post(() -> cb.onError(e.getMessage()));
-            }
-        });
+        InferenceStats(JSONObject response) {
+            totalMs = response.optLong("elapsed_ms");
+            imageLoadMs = response.optDouble("image_load_ms");
+            preprocessMs = response.optDouble("preprocess_ms");
+            visionMs = response.optDouble("vision_ms");
+            tokenizeMs = response.optDouble("tokenize_ms");
+            embeddingMs = response.optDouble("embedding_ms");
+            mixMs = response.optDouble("mix_ms");
+            llmMs = response.optDouble("llm_ms");
+            prefillMs = response.optDouble("prefill_ms");
+            decodeMs = response.optDouble("decode_ms");
+            promptTokens = response.optInt("prompt_tokens");
+            generatedTokens = response.optInt("generated_tokens");
+        }
     }
 
-    /** Text-only inference. */
-    public void runText(String prompt, Callback cb) {
-        executor.execute(() -> {
-            try {
-                ProcessBuilder pb = new ProcessBuilder(
-                    "/system/bin/linker64", binaryPath, "text", modelDir, prompt);
-                configureQnnEnvironment(pb);
-                pb.redirectErrorStream(true);
-                Process p = pb.start();
-
-                StringBuilder out = new StringBuilder();
-                try (BufferedReader r = new BufferedReader(
-                        new InputStreamReader(p.getInputStream()))) {
-                    String line;
-                    while ((line = r.readLine()) != null) {
-                        out.append(line).append("\n");
-                        String partial = line;
-                        mainHandler.post(() -> cb.onOutput(partial));
-                    }
-                }
-                int code = p.waitFor();
-                if (code != 0) {
-                    mainHandler.post(() -> cb.onError("Exit code " + code + ": " + out));
-                }
-            } catch (Exception e) {
-                mainHandler.post(() -> cb.onError(e.getMessage()));
-            }
-        });
+    public ModelRunner(Context context) {
+        appContext = context.getApplicationContext();
+        storage = new ModelStorage(appContext);
+        if (storage.isReady()) {
+            ContextCompat.startForegroundService(
+                appContext, new Intent(appContext, VlmForegroundService.class));
+        }
     }
 
     public boolean isReady() {
-        return new File(binaryPath).canExecute()
-            && (new File(modelDir, "qnn/llm.mnn").isFile()
-                || new File(modelDir, "llm.mnn").isFile());
+        return storage.isReady();
     }
 
-    void configureQnnEnvironment(ProcessBuilder pb) {
-        String libDir = new File(modelDir, "qnn/lib").getAbsolutePath();
-        String oldLd = pb.environment().get("LD_LIBRARY_PATH");
-        pb.environment().put("LD_LIBRARY_PATH",
-            oldLd == null || oldLd.isEmpty() ? libDir : libDir + ":" + oldLd);
-        pb.environment().put("ADSP_LIBRARY_PATH", libDir);
+    public void runText(String prompt, Callback callback) {
+        runRequest(null, prompt, callback);
+    }
+
+    public void runVision(String imagePath, String prompt, Callback callback) {
+        runRequest(imagePath, prompt, callback);
+    }
+
+    private void runRequest(String imagePath, String prompt, Callback callback) {
+        executor.execute(() -> {
+            try (LocalSocket socket = connectWithRetry();
+                 DataOutputStream output = new DataOutputStream(socket.getOutputStream());
+                 DataInputStream input = new DataInputStream(socket.getInputStream())) {
+                JSONObject request = new JSONObject();
+                request.put("version", 1);
+                request.put("type", "generate");
+                request.put("request_id", UUID.randomUUID().toString());
+                request.put("prompt", prompt);
+                request.put("image_path", imagePath == null ? "" : imagePath);
+                writeFrame(output, request);
+
+                while (true) {
+                    JSONObject response = readFrame(input);
+                    String type = response.optString("type");
+                    if ("token".equals(type)) {
+                        String chunk = response.optString("text");
+                        mainHandler.post(() -> callback.onOutput(chunk));
+                    } else if ("done".equals(type)) {
+                        InferenceStats stats = new InferenceStats(response);
+                        mainHandler.post(() -> callback.onComplete(stats));
+                        return;
+                    } else if ("error".equals(type)) {
+                        throw new IOException(response.optString(
+                            "message", "unknown server error"));
+                    }
+                }
+            } catch (Exception exception) {
+                String message = exception.getMessage();
+                if (message == null || message.isEmpty()) {
+                    message = exception.getClass().getSimpleName();
+                }
+                final String error = message;
+                mainHandler.post(() -> callback.onError(error));
+            }
+        });
+    }
+
+    private LocalSocket connectWithRetry() throws Exception {
+        long deadline = System.currentTimeMillis() + CONNECT_TIMEOUT_MS;
+        Exception lastError = null;
+        do {
+            LocalSocket socket = new LocalSocket(LocalSocket.SOCKET_STREAM);
+            try {
+                socket.connect(new LocalSocketAddress(
+                    INTERNAL_SOCKET_NAME, LocalSocketAddress.Namespace.ABSTRACT));
+                return socket;
+            } catch (Exception exception) {
+                lastError = exception;
+                try {
+                    socket.close();
+                } catch (IOException ignored) {
+                }
+                Thread.sleep(100);
+            }
+        } while (System.currentTimeMillis() < deadline);
+        throw new IOException("VLM service not ready", lastError);
+    }
+
+    private static void writeFrame(DataOutputStream output, JSONObject message)
+            throws Exception {
+        byte[] payload = message.toString().getBytes(StandardCharsets.UTF_8);
+        if (payload.length == 0 || payload.length > MAX_FRAME_SIZE) {
+            throw new IOException("invalid request frame size: " + payload.length);
+        }
+        output.writeInt(payload.length);
+        output.write(payload);
+        output.flush();
+    }
+
+    private static JSONObject readFrame(DataInputStream input) throws Exception {
+        final int size;
+        try {
+            size = input.readInt();
+        } catch (EOFException exception) {
+            throw new IOException("VLM service disconnected", exception);
+        }
+        if (size <= 0 || size > MAX_FRAME_SIZE) {
+            throw new IOException("invalid response frame size: " + size);
+        }
+        byte[] payload = new byte[size];
+        input.readFully(payload);
+        return new JSONObject(new String(payload, StandardCharsets.UTF_8));
+    }
+
+    @Override
+    public void close() {
+        executor.shutdownNow();
     }
 }

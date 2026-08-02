@@ -44,6 +44,8 @@ set(SOURCES
     vision/vision_encoder.cpp
     llm/llm_runtime.cpp
     pipeline/pipeline.cpp
+    server/ipc_protocol.cpp
+    server/vlm_service.cpp
     common/stb_image.cpp
     # MNN-LLM engine
     ${MNN_LLM_SRC}/src/llm.cpp
