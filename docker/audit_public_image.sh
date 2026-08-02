@@ -52,4 +52,11 @@ PY
 docker run --rm "$IMAGE" test -f \
   /opt/mobile-nano-vlm/public-deps.ready
 
+cmake_version="$(docker run --rm "$IMAGE" cmake --version | head -n 1)"
+if [ "$cmake_version" != "cmake version 4.3.4" ]; then
+  printf '错误: CMake 版本不匹配: %s\n' "$cmake_version" >&2
+  exit 1
+fi
+printf '%s\n' "$cmake_version"
+
 printf 'Public image audit passed: %s\n' "$IMAGE"

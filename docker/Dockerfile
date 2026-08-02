@@ -68,8 +68,6 @@ RUN printf '%s\n' \
     && touch /opt/mobile-nano-vlm/public-deps.ready \
     && rm -f /tmp/requirements-public.txt
 
-# QAIRT 2.48 的转换器扩展在运行时会加载 libpython3.10.so.1.0。
-# 这里只安装 Ubuntu 的公开开发运行库，不包含任何 Qualcomm 文件。
 RUN apt-get update && apt-get install -y --no-install-recommends \
       python3-dev \
     && rm -rf /var/lib/apt/lists/*
@@ -79,6 +77,19 @@ RUN python -m pip install \
       --index-url "$PIP_INDEX_URL" \
       yaspin==3.1.0 \
     && python -c "import yaspin; print('MNN LLM exporter dependencies verified')"
+
+ARG CMAKE_VERSION=4.3.4
+ARG CMAKE_SHA256=ca6f08ccbd5e6b0a9068d33317d0d1aff7278d08cccaed4529b8fbead7942a68
+RUN curl -fL \
+      "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz" \
+      -o /tmp/cmake.tar.gz \
+    && echo "${CMAKE_SHA256}  /tmp/cmake.tar.gz" | sha256sum -c - \
+    && mkdir -p /opt/cmake \
+    && tar -xzf /tmp/cmake.tar.gz -C /opt/cmake --strip-components=1 \
+    && rm /tmp/cmake.tar.gz \
+    && test "$(/opt/cmake/bin/cmake --version | head -n 1)" = \
+      "cmake version ${CMAKE_VERSION}"
+ENV PATH=/opt/cmake/bin:${PATH}
 
 WORKDIR /workspace
 CMD ["/bin/bash"]

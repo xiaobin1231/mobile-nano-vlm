@@ -18,7 +18,7 @@ export CMAKE_BIN=/path/to/cmake/bin/cmake
 
 ./scripts/convert_llm_qnn.sh \
   --deploy \
-  --image /path/to/51016.JPG \
+  --image /path/to/test_image.jpg \
   --prompt '请描述这幅图'
 ```
 

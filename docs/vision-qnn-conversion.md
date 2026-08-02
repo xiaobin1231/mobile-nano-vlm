@@ -26,7 +26,7 @@ export CMAKE_BIN=/path/to/cmake/bin/cmake
 
 ./scripts/convert_vision_qnn.sh \
   --deploy \
-  --image /path/to/51016.JPG \
+  --image /path/to/test_image.jpg \
   --prompt '请描述这幅图'
 ```
 
@@ -360,20 +360,3 @@ minimind_cli vision ...
 ```
 
 部署完整 VLM 要求 `artifacts/qnn/vision/` 和 `artifacts/qnn/llm/` 都已生成。
-
-## 13. 为什么不使用 compilefornpu 的 graph0.cpp
-
-当前 `third_party/MNN` Revision 的 QNN C++ 导出结果中出现过 4096 字节 NUL
-数据块，导致 `qnn-model-lib-generator` 编译失败。
-
-已验证的可行组合是：
-
-```text
-compilefornpu
-  → 只取MNN Plugin Wrapper
-
-qnn-onnx-converter
-  → 生成graph0.cpp、模型库和最终HTP Context
-```
-
-该组合不修改 `third_party/MNN` 源码。

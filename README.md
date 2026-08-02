@@ -4,27 +4,60 @@
 
 当前验证环境：Snapdragon 8 Gen 3（SM8650）、HTP v75、QAIRT
 2.48.0.260626、Android NDK r27d。模型转换在 Docker 中执行；Android 交叉编译
-和 adb 调试在主机执行，不需要修改 `third_party/MNN` 源码。
+和 adb 调试在主机执行。
 
 ## 1. 准备
 
-工程需要以下模型文件：
+模型文件：
 
 ```text
 third_party/minimind-v/out/sft_vlm_768.pth
 third_party/minimind-v/model/siglip2-base-p32-256-ve/
 ```
 
-主机依赖目录示例：
+依赖目录`DEPS_ROOT`：
+
+```bash
+export DEPS_ROOT=/path/to/deps
+mkdir -p "$DEPS_ROOT"
+```
+
+下载以下版本到DEPS_ROOT路径下：
+
+| 依赖 | 已验证版本 | 官方入口 |
+|---|---|---|
+| Qualcomm AI Runtime SDK | 2.48.0.260626 | [Qualcomm Software Center](https://softwarecenter.qualcomm.com/catalog/item/Qualcomm_AI_Runtime_Community) |
+| Android NDK | r27d | [Android NDK Downloads](https://developer.android.com/ndk/downloads) |
+| CMake | 4.3.4 Linux x86_64 | [CMake Downloads](https://cmake.org/download/) |
+
+QAIRT 下载需要登录 Qualcomm Software Center，并接受相应许可。选择
+`Qualcomm AI Runtime Community` 的 `2.48.0.260626`，下载文件名应类似
+`v2.48.0.260626.zip`。
+
+解压到 `DEPS_ROOT`：
+
+```bash
+unzip /path/to/downloads/v2.48.0.260626.zip \
+  -d "$DEPS_ROOT"
+
+unzip /path/to/downloads/android-ndk-r27d-linux.zip \
+  -d "$DEPS_ROOT"
+
+tar -xzf /path/to/downloads/cmake-4.3.4-linux-x86_64.tar.gz \
+  -C "$DEPS_ROOT"
+```
+
+解压后的目录必须是：
 
 ```text
 /path/to/deps/
 ├── qairt/2.48.0.260626/
 ├── android-ndk-r27d/
-└── cmake/
+└── cmake-4.3.4-linux-x86_64/
 ```
 
-确认 Docker 和手机连接正常：
+`adb` 可从 [Android SDK Platform Tools](https://developer.android.com/tools/releases/platform-tools)
+安装并加入 `PATH` 环境变量。确认 Docker 和手机连接正常：
 
 ```bash
 docker --version
@@ -51,11 +84,7 @@ export DEPS_ROOT=/path/to/deps
 ./scripts/convert_llm_qnn.sh
 ```
 
-脚本会自动启动临时 Container、挂载工程与 QAIRT、完成转换并删除 Container；
-无需手动执行 `docker run`。Vision 和 LLM 相互独立，LLM 脚本不会重复转换
-Vision。
-
-最终产物：
+构建产物：
 
 ```text
 artifacts/qnn/
@@ -72,30 +101,13 @@ artifacts/qnn/
     └── SHA256SUMS
 ```
 
-检查产物：
-
-```bash
-(
-  cd artifacts/qnn/vision
-  sha256sum -c SHA256SUMS
-)
-
-(
-  cd artifacts/qnn/llm
-  sha256sum -c SHA256SUMS
-)
-```
-
-如已有完整的 `artifacts/qnn/`，可跳过本节。
-
 ## 3. 编译并部署 Android
 
 设置主机编译环境：
 
 ```bash
-export ANDROID_NDK="$DEPS_ROOT/android-ndk-r27d"
-export QNN_SDK_ROOT="$DEPS_ROOT/qairt/2.48.0.260626"
-export CMAKE_BIN="$DEPS_ROOT/cmake/bin/cmake"
+export DEPS_ROOT=/path/to/deps
+source scripts/env_setup.sh
 ```
 
 编译并推送程序、模型和 QNN 运行库：
@@ -143,40 +155,7 @@ export ADSP_LIBRARY_PATH=$PWD/models/qnn/lib
 
 正常情况下会打印图片尺寸、推理耗时和图片描述。
 
-## 5. 常用入口
-
-| 文件 | 用途 |
-|---|---|
-| `scripts/convert_vision_qnn.sh` | 自动转换 Vision Wrapper 与 HTP Context |
-| `scripts/convert_llm_qnn.sh` | 自动转换 LLM Wrapper 与 10 个 HTP Context |
-| `scripts/build.sh` | 编译 Linux 或 Android 程序及 MNN |
-| `scripts/deploy_qnn_android.sh` | 通过 adb 部署完整 QNN VLM |
-| `docker/build_public_image.sh` | 构建公开转换基础镜像 |
-| `docker/audit_public_image.sh` | 检查镜像依赖和敏感内容 |
-| `docker/push_public_image.sh` | 审计后推送公开镜像 |
-
-以下文件是转换入口调用的内部实现，不需要用户直接执行：
-
-```text
-scripts/_qnn_pipeline_common.sh
-scripts/run_setup.sh
-scripts/generate_qnn.py
-scripts/npu_convert.py
-utils/export_minimind_mnn.py
-utils/export_vision_pipeline_onnx.py
-utils/prepare_vision_qnn_onnx.py
-utils/patch_mnn_wrapper_nchw.cpp
-```
-
-## 6. 详细文档
+## 5. 详细说明
 
 - [Vision QNN 转换流程](docs/vision-qnn-conversion.md)
 - [LLM QNN 转换流程](docs/llm-qnn-conversion.md)
-- [公开模型转换基础镜像](docs/public-docker-image.md)
-
-转换脚本参数可通过以下命令查看：
-
-```bash
-./scripts/convert_vision_qnn.sh --help
-./scripts/convert_llm_qnn.sh --help
-```
